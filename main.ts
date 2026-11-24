@@ -1,104 +1,72 @@
-// tiny-stack-vm — round 1, written natively in this session
-// A small stack virtual machine: PUSH, POP, ADD, SUB, MUL, DIV, HLT.
-// Runs under Node 22, no install, stdlib only.
+// site-generator-speed — minimal static site generator for make.fun bounty
+// Reads markdown from ./content, applies template.html, writes to ./dist
 
-export interface Program {
-  code: Uint8Array;
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join, extname, basename, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const CONTENT_DIR = join(__dirname, 'content');
+const DIST_DIR = join(__dirname, 'dist');
+const TEMPLATE_FILE = join(__dirname, 'template.html');
+
+function readTemplate(): string {
+  if (!existsSync(TEMPLATE_FILE)) {
+    // minimal inline template
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{title}}</title><link rel="stylesheet" href="style.css"></head><body>{{content}}</body></html>`;
+  }
+  return readFileSync(TEMPLATE_FILE, 'utf8');
 }
 
-export const OP = {
-  PUSH: 0x01,
-  POP: 0x02,
-  ADD: 0x03,
-  SUB: 0x04,
-  MUL: 0x05,
-  DIV: 0x06,
-  HLT: 0x07,
-} as const;
+function renderPage(markdown: string, title: string): string {
+  let html = markdown
+    .replace(/^#\s+(.+)$/gm, '<h1>$1</h1>')
+    .replace(/^##\s+(.+)$/gm, '<h2>$1</h2>')
+    .replace(/^###\s+(.+)$/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>');
+  
+  const paragraphs = html.split('\n\n').filter(p => p.trim());
+  html = paragraphs.map(p => {
+    if (/^<h[1-6]>/.test(p.trim()) || /^<pre>/.test(p.trim()) || /^<ul>/.test(p.trim())) return p;
+    return `<p>${p}</p>`;
+  }).join('\n');
+  
+  const template = readTemplate();
+  return template.replace('{{content}}', html).replace('{{title}}', title);
+}
 
-type Opcode = (typeof OP)[keyof typeof OP];
-
-export class VM {
-  private ip = 0;
-  private stack: number[] = [];
-  private halted = false;
-  private trace: string[] = [];
-
-  step(code: Uint8Array): boolean {
-    if (this.halted || this.ip >= code.length) return false;
-    const op = code[this.ip++] as Opcode;
-    switch (op) {
-      case OP.PUSH: {
-        const v = code[this.ip++];
-        this.stack.push(v);
-        this.trace.push(`PUSH ${v}`);
-        break;
-      }
-      case OP.POP: {
-        const v = this.stack.pop();
-        this.trace.push(`POP ${v}`);
-        break;
-      }
-      case OP.ADD: {
-        const b = this.stack.pop()!;
-        const a = this.stack.pop()!;
-        this.stack.push(a + b);
-        this.trace.push(`ADD ${a}+${b}=${a + b}`);
-        break;
-      }
-      case OP.SUB: {
-        const b = this.stack.pop()!;
-        const a = this.stack.pop()!;
-        this.stack.push(a - b);
-        this.trace.push(`SUB ${a}-${b}=${a - b}`);
-        break;
-      }
-      case OP.MUL: {
-        const b = this.stack.pop()!;
-        const a = this.stack.pop()!;
-        this.stack.push(a * b);
-        this.trace.push(`MUL ${a}*${b}=${a * b}`);
-        break;
-      }
-      case OP.DIV: {
-        const b = this.stack.pop()!;
-        const a = this.stack.pop()!;
-        this.stack.push(Math.trunc(a / b));
-        this.trace.push(`DIV ${a}/${b}=${Math.trunc(a / b)}`);
-        break;
-      }
-      case OP.HLT:
-        this.halted = true;
-        this.trace.push('HLT');
-        return false;
-      default:
-        throw new Error(`unknown opcode 0x${op.toString(16)} at ip ${this.ip - 1}`);
+function build(): void {
+  if (!existsSync(CONTENT_DIR)) {
+    console.error('content/ not found');
+    process.exit(1);
+  }
+  mkdirSync(DIST_DIR, { recursive: true });
+  
+  const files = readdirSync(CONTENT_DIR, { recursive: true });
+  for (const file of files) {
+    const fullPath = join(CONTENT_DIR, file as string);
+    if (statSync(fullPath).isFile() && extname(fullPath) === '.md') {
+      const relPath = (file as string).slice(0, -3);
+      const markdown = readFileSync(fullPath, 'utf8');
+      const title = basename(relPath).replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const html = renderPage(markdown, title);
+      const outDir = join(DIST_DIR, dirname(relPath));
+      mkdirSync(outDir, { recursive: true });
+      writeFileSync(join(outDir, basename(relPath) + '.html'), html);
+      console.log('generated:', relPath + '.html');
     }
-    return true;
   }
-
-  run(code: Uint8Array): number[] {
-    while (this.step(code)) {}
-    return [...this.stack];
-  }
-
-  getTrace(): string[] {
-    return [...this.trace];
+  
+  // copy static assets
+  const staticDir = join(__dirname, 'static');
+  if (existsSync(staticDir)) {
+    copyFileSync(join(staticDir, 'style.css'), join(DIST_DIR, 'style.css'));
+    console.log('copied: style.css');
   }
 }
 
-if (import.meta.url === process.argv[1]) {
-  // example program: PUSH 3, PUSH 4, MUL, PUSH 2, ADD, HLT => 3*4+2 = 14
-  const code = new Uint8Array([
-    OP.PUSH, 3,
-    OP.PUSH, 4,
-    OP.MUL,
-    OP.PUSH, 2,
-    OP.ADD,
-    OP.HLT,
-  ]);
-  const vm = new VM();
-  const result = vm.run(code);
-  console.log('stack:', result);
-  console.log('trace:', vm.getTrace().join(' | '));
-}
+build();
