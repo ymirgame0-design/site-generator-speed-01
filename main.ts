@@ -7,13 +7,14 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const CONTENT_DIR = join(__dirname, 'content');
-const DIST_DIR = join(__dirname, 'dist');
-const TEMPLATE_FILE = join(__dirname, 'template.html');
+const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR || __dirname;
+const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR || join(__dirname, 'dist');
+const CONTENT_DIR = join(INPUT_DIR, 'content');
+const TEMPLATE_FILE = join(INPUT_DIR, 'template.html');
+const STATIC_SOURCE = join(INPUT_DIR, 'static');
 
 function readTemplate(): string {
   if (!existsSync(TEMPLATE_FILE)) {
-    // minimal inline template
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{title}}</title><link rel="stylesheet" href="style.css"></head><body>{{content}}</body></html>`;
   }
   return readFileSync(TEMPLATE_FILE, 'utf8');
@@ -28,13 +29,13 @@ function renderPage(markdown: string, title: string): string {
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`(.+?)`/g, '<code>$1</code>')
     .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>');
-  
+
   const paragraphs = html.split('\n\n').filter(p => p.trim());
   html = paragraphs.map(p => {
     if (/^<h[1-6]>/.test(p.trim()) || /^<pre>/.test(p.trim()) || /^<ul>/.test(p.trim())) return p;
     return `<p>${p}</p>`;
   }).join('\n');
-  
+
   const template = readTemplate();
   return template.replace('{{content}}', html).replace('{{title}}', title);
 }
@@ -44,8 +45,8 @@ function build(): void {
     console.error('content/ not found');
     process.exit(1);
   }
-  mkdirSync(DIST_DIR, { recursive: true });
-  
+  mkdirSync(OUTPUT_DIR, { recursive: true });
+
   const files = readdirSync(CONTENT_DIR, { recursive: true });
   for (const file of files) {
     const fullPath = join(CONTENT_DIR, file as string);
@@ -54,17 +55,15 @@ function build(): void {
       const markdown = readFileSync(fullPath, 'utf8');
       const title = basename(relPath).replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
       const html = renderPage(markdown, title);
-      const outDir = join(DIST_DIR, dirname(relPath));
+      const outDir = join(OUTPUT_DIR, dirname(relPath));
       mkdirSync(outDir, { recursive: true });
       writeFileSync(join(outDir, basename(relPath) + '.html'), html);
       console.log('generated:', relPath + '.html');
     }
   }
-  
-  // copy static assets
-  const staticDir = join(__dirname, 'static');
-  if (existsSync(staticDir)) {
-    copyFileSync(join(staticDir, 'style.css'), join(DIST_DIR, 'style.css'));
+
+  if (existsSync(STATIC_SOURCE)) {
+    copyFileSync(join(STATIC_SOURCE, 'style.css'), join(OUTPUT_DIR, 'style.css'));
     console.log('copied: style.css');
   }
 }
